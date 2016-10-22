@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+"use strict";
 
 const logger = require("./logger.js");
 const utils = require("./utils.js");

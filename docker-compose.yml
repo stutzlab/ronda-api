@@ -1,4 +1,4 @@
-data_api:
+ronda_presence_api:
   build: .
   ports:
-   - "4000:4000"
+   - "6000:4000"
