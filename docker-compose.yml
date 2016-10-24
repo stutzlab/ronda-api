@@ -1,4 +1,4 @@
 ronda_presence_api:
   build: .
   ports:
-   - "6000:4000"
+   - "7000:4000"

@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "async": "^2.1.1",
+    "geojson": "^0.4.0",
     "geolib": "^2.0.21",
     "hapi": "^13.4.1",
     "influx": "^4.2.3",

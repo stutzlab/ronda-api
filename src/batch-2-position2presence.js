@@ -100,7 +100,7 @@ function processPositions(positions, startTime, accountId, callback) {
   //consider it to be a new pass if position detected > 3min
   const timeBetweenPasses = 180000;//180000
   //presence circle radius
-  const regionRadius = 5//5
+  const regionRadius = 50//5
 
   var currentRegion = null;
   var lastPass = null;
@@ -138,7 +138,7 @@ function processPositions(positions, startTime, accountId, callback) {
       //location was not found among already known regions
       if(foundRegion==null) {
         logger.debug("Creating new region");
-        currentRegion = {latitude: pos.latitude, longitude: pos.longitude, radius: regionRadius, passes: []};
+        currentRegion = {latitude: pos.latitude, longitude: pos.longitude, radius: regionRadius, passes: [], samplesCount: 1};
         regions.push(currentRegion);
         if(lastPass!=null) {
           lastPass.endTime = pos.time;
@@ -147,12 +147,18 @@ function processPositions(positions, startTime, accountId, callback) {
         currentRegion.passes.push(lastPass);
 
       //location found among known regions
-      } else if(pos.time-currentRegion.lastPosTime<timeBetweenPasses && foundRegion!=currentRegion) {
+      } else if((pos.time-currentRegion.lastPosTime)<timeBetweenPasses && foundRegion!=currentRegion) {
         logger.debug("New pass on already known region");
         currentRegion = foundRegion;
         lastPass.endTime = pos.time;
         lastPass = {startTime: pos.time, trackers: [{trackerId: pos.trackerId, time: pos.time}]};
-        currentRegion.passes.push(lastPass);
+
+        //check to see if time between passes is too low so that a new pass on the other region is not meant to be created
+        if((pos.time-currentRegion.lastPosTime)>timeBetweenPasses) {
+          currentRegion.passes.push(lastPass);
+        } else {
+          logger.debug("Pass on the known region too near the last pass on it. Skipping.");
+        }
 
       } else {
         logger.debug("Still on the same region + same pass");
@@ -167,6 +173,7 @@ function processPositions(positions, startTime, accountId, callback) {
           lastPass.trackers.push({trackerId: pos.trackerId, time: pos.time});
         }
       }
+      currentRegion.samplesCount++;
       currentRegion.lastPosTime = pos.time;
 
       acceptedCounter++;
@@ -181,7 +188,7 @@ function processPositions(positions, startTime, accountId, callback) {
   for(var a=0; a<regions.length; a++) {
     var region = regions[a];
     var sample = [
-      {time: region.passes[0].startTime, latitude: region.latitude, longitude: region.longitude, radius: region.radius, qttyPass: region.passes.length, passVariation: calculateStdev(region.passes), totalTime: calculateTotalTime(region.passes), passes: "\"" + JSON.stringify(region.passes) + "\""},
+      {time: region.passes[0].startTime, latitude: region.latitude, longitude: region.longitude, radius: region.radius, qttyPass: region.passes.length, passVariation: calculateStdev(region.passes), samplesCount: region.samplesCount, totalTime: calculateTotalTime(region.passes), passes: "\"" + JSON.stringify(region.passes) + "\""},
       {}
     ];
     utils.deleteNullProperties(sample[0]);

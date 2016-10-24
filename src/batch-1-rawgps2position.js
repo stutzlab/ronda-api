@@ -17,8 +17,6 @@ const influxClient = utils.getInfluxClient();
 var buffer = {};
 var bufferCount = 0;
 
-console.log(JSON.stringify(nmea.parse("$GPRMC,082943.00,A,1559.6898,S,4749.4258,W,0.0,99.5,181016,0.0,E,A*36")));
-
 //list of trackers/account to be processed
 //TODO get from command line parameter
 const account_id = "flaviostutz";
@@ -38,6 +36,7 @@ influxClient.query("select * from batch_control where batch_type='raw-gps-to-pos
     //query historical raw gps data from StutzThings
     var deviceNode = "v1/devices/" + account_id + "/" + tracker_id + "/gps";
     var metricsName = deviceNode + "/position";
+    logger.debug("Getting data from " + metricsName + "; start_time=" + start_time);
     http.get({
       host: "api.data.stutzthings.com",
       path: "/"+ deviceNode +"/raw?start_time=" + (start_time!=null?start_time:"")
@@ -60,9 +59,9 @@ influxClient.query("select * from batch_control where batch_type='raw-gps-to-pos
             influxClient.writePoint("batch_control", utils.deleteNullProperties({acceptedCounter:acceptedCounter, rejectedCounter:rejectedCounter, message: message}), utils.deleteNullProperties({account_id: account_id, tracker_id: tracker_id, batch_type: "raw-gps-to-position", success: err!=null?false:true}), {}, function(err) {
               if(err) {
                 logger.error(err);
-                logger.error("Error writing batch_control success state. err=" + err);
+                logger.error("Error writing batch_control. err=" + err);
               } else {
-                logger.debug("Successfully wrote batch_control success state");
+                logger.debug("Successfully wrote batch_control");
               }
             });
           });
@@ -102,22 +101,25 @@ function processRawGPS(rawGPSData, accountId, trackerId, callback) {
   var lastGgaNmea = null;
   var saveSample = null;
 
-  logger.debug("rawGPSData = " + JSON.stringify(parsed));
+  logger.debug("Processing raw gps data. accountId=" + accountId + "; trackerId=" + trackerId);
+
+  // logger.debug("rawGPSData = " + JSON.stringify(parsed));
   for(var i=0; i<parsed[0].length; i++) {
     var rawGps = parsed[0][i].value;
     logger.debug("========");
     logger.debug("========");
-    logger.info("Processing raw gps data: " + rawGps);
+    // logger.info("Processing raw gps data: " + rawGps);
+    logger.info("Processing raw gps data");
     var lines = rawGps.split("\r");
     lines = lines.concat(rawGps.split("\n"));
     for(var a=0; a<lines.length; a++) {
       logger.debug("---------");
       var line = lines[a].trim();
       if(line.length>0) {
-        logger.debug("RAW NMEA: " + line);
+        // logger.debug("RAW NMEA: " + line);
         try {
           const nmeaMsg = nmea.parse(line);
-          logger.debug("PARSED NMEA: " + JSON.stringify(nmeaMsg));
+          // logger.debug("PARSED NMEA: " + JSON.stringify(nmeaMsg));
 
           if(nmeaMsg.valid && nmeaMsg.datetime!=null && !isNaN(nmeaMsg.datetime.getTime())) {
             var sample = null;
@@ -130,7 +132,7 @@ function processRawGPS(rawGPSData, accountId, trackerId, callback) {
                 nmeaMsg.track = null;
               }
               sample = [
-                {time: nmeaMsg.datetime.getTime(), latitude: nmeaMsg.loc.geojson.coordinates[0], longitude: nmeaMsg.loc.geojson.coordinates[1], speed: nmeaMsg.speed.kmh, track: nmeaMsg.track},
+                {time: nmeaMsg.datetime.getTime(), latitude: nmeaMsg.loc.geojson.coordinates[1], longitude: nmeaMsg.loc.geojson.coordinates[0], speed: nmeaMsg.speed.kmh, track: nmeaMsg.track},
                 {gpsQuality: nmeaMsg.gpsQuality, trackerId: trackerId}
               ];
               utils.deleteNullProperties(sample[0]);
@@ -146,7 +148,7 @@ function processRawGPS(rawGPSData, accountId, trackerId, callback) {
                 //if datetime is too far from last rmc message, something may be wrong (samples are probably too distant and we should not use last rmc day month year part)
                 if(Math.abs(nmeaMsg.datetime.getTime()-lastRmcNmea.datetime.getTime())<600000) {
                   sample = [
-                    {time: nmeaMsg.datetime.getTime(), latitude: nmeaMsg.loc.geojson.coordinates[0], longitude: nmeaMsg.loc.geojson.coordinates[1], altitude: nmeaMsg.altitude, qttySatellites: nmeaMsg.satellites, hdop: nmeaMsg.hdop},
+                    {time: nmeaMsg.datetime.getTime(), latitude: nmeaMsg.loc.geojson.coordinates[1], longitude: nmeaMsg.loc.geojson.coordinates[0], altitude: nmeaMsg.altitude, qttySatellites: nmeaMsg.satellites, hdop: nmeaMsg.hdop},
                     {gpsQuality: nmeaMsg.gpsQuality, trackerId: trackerId}
                   ];
                   utils.deleteNullProperties(sample[0]);
@@ -199,6 +201,7 @@ function processRawGPS(rawGPSData, accountId, trackerId, callback) {
         }
       }
     }
+    logger.debug("Pending samples: " + bufferCount);
   }
 
   //save last pending sample
@@ -218,6 +221,7 @@ function processRawGPS(rawGPSData, accountId, trackerId, callback) {
 }
 
 function flushToInfluxDB(callback) {
+  logger.debug("Flushing data to influxdb. bufferCount=" + bufferCount);
   if (bufferCount==0) {
     callback();
   } else {
