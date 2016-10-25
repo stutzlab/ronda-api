@@ -27,19 +27,19 @@ logger.debug("");
 logger.debug("===> PROCESSING RAW GPS DATA FOR /v1/devices/" + account_id + "/" + tracker_id + "/gps/raw");
 influxClient.query("select * from batch_control where batch_type='raw-gps-to-position' and account_id='"+ account_id +"' and tracker_id='"+ tracker_id +"' and success='true' order by time desc limit 1", function(err, results) {
   if(!err) {
-    var start_time = null;
+    var startTime = null;
     if(results.length>0 && results[0].length>0) {
-      start_time = results[0][0].time;
+      startTime = new Date(results[0][0].time);
     }
-    logger.debug("Last time success = " + start_time);
+    logger.debug("Last time success = " + startTime);
 
     //query historical raw gps data from StutzThings
     var deviceNode = "v1/devices/" + account_id + "/" + tracker_id + "/gps";
     var metricsName = deviceNode + "/position";
-    logger.debug("Getting data from " + metricsName + "; start_time=" + start_time);
+    logger.debug("Getting data from " + metricsName + "; startTime=" + startTime);
     http.get({
       host: "api.data.stutzthings.com",
-      path: "/"+ deviceNode +"/raw?start_time=" + (start_time!=null?start_time:"")
+      path: "/"+ deviceNode +"/raw?start_time=" + (startTime!=null?startTime:"")
     }, function(response) {
       // Continuously update stream with data
       var body = '';
@@ -48,7 +48,7 @@ influxClient.query("select * from batch_control where batch_type='raw-gps-to-pos
       });
       response.on('end', function() {
         try {
-          processRawGPS(body, account_id, tracker_id, function(err, acceptedCounter, rejectedCounter) {
+          processRawGPS(body, account_id, tracker_id, startTime, function(err, acceptedCounter, rejectedCounter) {
             var message = null;
             if(!err) {
               logger.info("Raw gps processed successfully. acceptedCounter=" + acceptedCounter + "; rejectedCounter=" + rejectedCounter);
@@ -91,7 +91,7 @@ influxClient.query("select * from batch_control where batch_type='raw-gps-to-pos
   }
 });
 
-function processRawGPS(rawGPSData, accountId, trackerId, callback) {
+function processRawGPS(rawGPSData, accountId, trackerId, startTime, callback) {
   var metricsName = "accounts/"+ accountId + "/positions";
   var parsed = JSON.parse(rawGPSData);
   buffer[metricsName] = [];
@@ -101,7 +101,7 @@ function processRawGPS(rawGPSData, accountId, trackerId, callback) {
   var lastGgaNmea = null;
   var saveSample = null;
 
-  logger.debug("Processing raw gps data. accountId=" + accountId + "; trackerId=" + trackerId);
+  logger.debug("Processing raw gps data. accountId=" + accountId + "; trackerId=" + trackerId + "; samples=" + parsed[0].length);
 
   // logger.debug("rawGPSData = " + JSON.stringify(parsed));
   for(var i=0; i<parsed[0].length; i++) {
@@ -211,13 +211,23 @@ function processRawGPS(rawGPSData, accountId, trackerId, callback) {
     acceptedCounter++;
   }
 
-  flushToInfluxDB(function(err) {
+  //delete previous positions
+  logger.debug("Deleting previous position data from accounts/" + accountId + "/positions fromDate=" + startTime);
+  influxClient.query("delete from \"accounts/" + accountId + "/positions\" where time >= "+ (startTime!=null?startTime.getTime():0) + "s", function(err, results) {
     if(err) {
-      callback("Could not process raw gps positions. err=" + err, acceptedCounter, rejectedCounter);
+      callback("Could not delete existing positions. err=" + err, acceptedCounter, rejectedCounter);
     } else {
-      callback(null, acceptedCounter, rejectedCounter);
+      logger.debug("Deleted existing positions after " + startTime);
+      flushToInfluxDB(function(err) {
+        if(err) {
+          callback("Could not process raw gps positions. err=" + err, acceptedCounter, rejectedCounter);
+        } else {
+          callback(null, acceptedCounter, rejectedCounter);
+        }
+      });
     }
   });
+
 }
 
 function flushToInfluxDB(callback) {

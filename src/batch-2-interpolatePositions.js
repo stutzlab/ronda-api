@@ -13,8 +13,8 @@ const d3 = require("d3-interpolate");
 logger.level = "debug";
 
 const minDistance = 25;
-const maxDistance = 1000;
-const maxTime = 180000;
+const maxDistance = 500;
+const maxTime = 60000;
 
 //prepare influxdb communications
 logger.info("Starting Ronda position2presence Batch");
@@ -42,7 +42,7 @@ influxClient.query("select * from batch_control where batch_type='position-inter
 
     //query positions from influxdb
     logger.info("Getting position data to be the source of interpolation");
-    influxClient.query("select * from \"accounts/" + accountId + "/positions\" where time > "+ startTime.getTime() + " and interpolated<>'true' order by time asc", function(err, results) {
+    influxClient.query("select * from \"accounts/" + accountId + "/positions\" where time >= "+ startTime.getTime() + "s and interpolated<>'true' order by time asc", function(err, results) {
       if(!err) {
         if(results.length>0 && results[0].length>0) {
           interpolatePositions(results[0], startTime, accountId, function(err, acceptedCounter, rejectedCounter, lastElementTime) {
@@ -53,14 +53,14 @@ influxClient.query("select * from batch_control where batch_type='position-inter
               logger.error(err + " acceptedCounter=" + acceptedCounter + "; rejectedCounter=" + rejectedCounter);
               message = err.toString();
             }
-            // influxClient.writePoint("batch_control", utils.deleteNullProperties({acceptedCounter:acceptedCounter, rejectedCounter:rejectedCounter, message: message, lastElementTime: lastElementTime}), utils.deleteNullProperties({accountId: accountId, batch_type: "position-to-presence", success: err!=null?false:true}), {}, function(err) {
-            //   if(err) {
-            //     logger.error(err);
-            //     logger.error("Error writing batch_control success state. err=" + err);
-            //   } else {
-            //     logger.debug("Successfully wrote batch_control success state");
-            //   }
-            // });
+            influxClient.writePoint("batch_control", utils.deleteNullProperties({acceptedCounter:acceptedCounter, rejectedCounter:rejectedCounter, message: message, lastElementTime: lastElementTime}), utils.deleteNullProperties({accountId: accountId, batch_type: "position-to-presence", success: err!=null?false:true}), {}, function(err) {
+              if(err) {
+                logger.error(err);
+                logger.error("Error writing batch_control success state. err=" + err);
+              } else {
+                logger.debug("Successfully wrote batch_control success state");
+              }
+            });
           });
         } else {
           logger.debug("Empty results for positions found. Skipping.");
@@ -173,7 +173,7 @@ function interpolatePositions(rawPositions, startTime, accountId, callback) {
     }
   }
 
-  influxClient.query("delete from \"accounts/" + accountId + "/positions\" where time > "+ startTime.getTime() + " and interpolated='true'", function(err, results) {
+  influxClient.query("delete from \"accounts/" + accountId + "/positions\" where time >= "+ startTime.getTime() + "s and interpolated='true'", function(err, results) {
     if(err) {
       callback("Could not delete previously interpolated positions. err=" + err, acceptedCounter, rejectedCounter);
     } else {

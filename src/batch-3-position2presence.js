@@ -7,7 +7,6 @@ const influx = require("influx");
 const http = require("http");
 const async = require("async");
 const geolib = require("geolib");
-const geolib = require("d3-interpolate");
 const stats = require("stats-lite");
 logger.level = "debug";
 
@@ -19,27 +18,29 @@ const influxClient = utils.getInfluxClient();
 var buffer = {};
 var bufferCount = 0;
 
+
 //list of accounts to be processed
 //TODO get from command line parameter
 const accountId = "flaviostutz";
+const startTime = new Date('2015-01-01T00:00:00-03:00');
+const endTime = new Date('2017-01-01T00:00:00-03:00');
+const timeBetweenPasses = 180000;//consider it to be a new pass if position detected > 3min
+const regionRadius = 50//presence circle radius
+
 
 //TRANSFORM POSITIONS TO PRESENCE INFO
 logger.debug("");
 logger.debug("===> PROCESSING POSITIONS from accounts/" + accountId + "/positions");
 influxClient.query("select * from batch_control where batch_type='position-to-presence' and accountId='"+ accountId +"' and success='true' order by time desc limit 1", function(err, results) {
   if(!err) {
-    var lastSuccessTime = 0;
-    if(results.length>0 && results[0].length>0) {
-      lastSuccessTime = results[0][0].time;
-    }
-    logger.debug("Last time success = " + lastSuccessTime);
-    var startTime = new Date(lastSuccessTime);
+    logger.debug("startTime=" + startTime + "; endTime=" + endTime);
 
     //query positions from influxdb
-    influxClient.query("select * from \"accounts/" + accountId + "/positions\" where time > "+ startTime.getTime() + " order by time asc", function(err, results) {
+    logger.info("Getting positions to be used during presence estimations. startTime=" + startTime + "; endTime=" + endTime);
+    influxClient.query("select * from \"accounts/" + accountId + "/positions\" where time >= "+ startTime.getTime() + "s and time <= "+ endTime.getTime() +"s order by time asc", function(err, results) {
       if(!err) {
         if(results.length>0 && results[0].length>0) {
-          processPositions(results[0], startTime, accountId, function(err, acceptedCounter, rejectedCounter) {
+          processPositions(results[0], startTime, accountId, function(err, acceptedCounter, rejectedCounter, lastElementTime) {
             var message = null;
             if(!err) {
               logger.info("Positions processed successfully. acceptedCounter=" + acceptedCounter + "; rejectedCounter=" + rejectedCounter);
@@ -47,17 +48,23 @@ influxClient.query("select * from batch_control where batch_type='position-to-pr
               logger.error(err + " acceptedCounter=" + acceptedCounter + "; rejectedCounter=" + rejectedCounter);
               message = err.toString();
             }
-            influxClient.writePoint("batch_control", utils.deleteNullProperties({acceptedCounter:acceptedCounter, rejectedCounter:rejectedCounter, message: message}), utils.deleteNullProperties({accountId: accountId, batch_type: "position-to-presence", success: err!=null?false:true}), {}, function(err) {
+            influxClient.writePoint("batch_control", utils.deleteNullProperties({acceptedCounter:acceptedCounter, rejectedCounter:rejectedCounter, message: message}), utils.deleteNullProperties({accountId: accountId, batch_type: "position-to-presence", success: err!=null?false:true, lastElementTime: lastElementTime}), {}, function(err) {
               if(err) {
-                logger.error(err);
-                logger.error("Error writing batch_control success state. err=" + err);
+                logger.error("Error writing batch_control. err=" + err);
               } else {
-                logger.debug("Successfully wrote batch_control success state");
+                logger.debug("Successfully wrote batch_control");
               }
             });
           });
         } else {
           logger.debug("Empty results for positions found. Skipping.");
+          influxClient.writePoint("batch_control", utils.deleteNullProperties({acceptedCounter:0, rejectedCounter:0, message: 'No positions found to be processed'}), utils.deleteNullProperties({accountId: accountId, batch_type: "position-to-presence", success: err!=null?false:true}), {}, function(err) {
+            if(err) {
+              logger.error("Error writing batch_control. err=" + err);
+            } else {
+              logger.debug("Successfully wrote batch_control");
+            }
+          });
         }
       } else {
         logger.error(err);
@@ -77,6 +84,7 @@ influxClient.query("select * from batch_control where batch_type='position-to-pr
 });
 
 function processPositions(positions, startTime, accountId, callback) {
+  logger.info("Processing " + positions.length + " positions");
   const metricsName = "accounts/" + accountId + "/presence";
   buffer[metricsName] = [];
   var acceptedCounter = 0;
@@ -98,92 +106,85 @@ function processPositions(positions, startTime, accountId, callback) {
   //}]
   const regions = [];
 
-  //consider it to be a new pass if position detected > 3min
-  const timeBetweenPasses = 180000;//180000
-  //presence circle radius
-  const regionRadius = 50//5
-
   var currentRegion = null;
   var lastPass = null;
 
   //CALCULATE PRESENCE REGION CIRCLES
   for(var i=0; i<positions.length; i++) {
-    // try {
-      var pos = {
-        latitude: positions[i].latitude,
-        longitude: positions[i].longitude,
-        time: new Date(positions[i].time),
-        trackerId: positions[i].trackerId
-      }
-      logger.debug("========");
-      logger.debug("========");
-      logger.debug("Processing position. pos=" + JSON.stringify(pos.latitude) + "," + JSON.stringify(pos.longitude) + "-" + pos.time + "; currentRegion=" + (currentRegion!=null?currentRegion.latitude:"") + "," + (currentRegion!=null?currentRegion.longitude:"") + "; lastPass=" + (lastPass!=null?lastPass.startTime:""));
+    var pos = {
+      latitude: positions[i].latitude,
+      longitude: positions[i].longitude,
+      time: new Date(positions[i].time),
+      trackerId: positions[i].trackerId
+    }
+    logger.debug("========");
+    logger.debug("========");
+    logger.debug("Processing position. pos=" + JSON.stringify(pos.latitude) + "," + JSON.stringify(pos.longitude) + "-" + pos.time + "; currentRegion=" + (currentRegion!=null?currentRegion.latitude:"") + "," + (currentRegion!=null?currentRegion.longitude:"") + "; lastPass=" + (lastPass!=null?lastPass.startTime:""));
 
-      var foundRegion = null;
+    var foundRegion = null;
 
-      //verify if point is in the same region
-      //optimization tip: do this at first because the majority of queries will result on being in the same region
-      if(currentRegion!=null && geolib.isPointInCircle(pos, currentRegion, regionRadius)) {
-        foundRegion = currentRegion;
-      }
+    //verify if point is in the same region
+    //optimization tip: do this at first because the majority of queries will result on being in the same region
+    if(currentRegion!=null && geolib.isPointInCircle(pos, currentRegion, regionRadius)) {
+      foundRegion = currentRegion;
+    }
 
-      //find any region containing current position
-      if(foundRegion==null) {
-        for(var a=0; a<regions.length; a++) {
-          if(geolib.isPointInCircle(pos, regions[a], regionRadius)) {
-            foundRegion = regions[a];
-          }
+    //find any region containing current position
+    if(foundRegion==null) {
+      for(var a=0; a<regions.length; a++) {
+        if(geolib.isPointInCircle(pos, regions[a], regionRadius)) {
+          foundRegion = regions[a];
         }
       }
+    }
 
-      //location was not found among already known regions
-      if(foundRegion==null) {
-        logger.debug("Creating new region");
-        currentRegion = {latitude: pos.latitude, longitude: pos.longitude, radius: regionRadius, passes: [], samplesCount: 1};
-        regions.push(currentRegion);
-        if(lastPass!=null) {
-          lastPass.endTime = pos.time;
-        }
-        lastPass = {startTime: pos.time, trackers: [{trackerId: pos.trackerId, time: pos.time}]};
-        currentRegion.passes.push(lastPass);
-
-      //location found among known regions
-      } else if((pos.time-currentRegion.lastPosTime)<timeBetweenPasses && foundRegion!=currentRegion) {
-        logger.debug("New pass on already known region");
-        currentRegion = foundRegion;
+    //location was not found among already known regions
+    if(foundRegion==null) {
+      logger.debug("Creating new region");
+      currentRegion = {latitude: pos.latitude, longitude: pos.longitude, radius: regionRadius, passes: [], samplesCount: 1};
+      regions.push(currentRegion);
+      if(lastPass!=null) {
         lastPass.endTime = pos.time;
-        lastPass = {startTime: pos.time, trackers: [{trackerId: pos.trackerId, time: pos.time}]};
+      }
+      lastPass = {startTime: pos.time, trackers: [{trackerId: pos.trackerId, time: pos.time}]};
+      currentRegion.passes.push(lastPass);
 
-        //check to see if time between passes is too low so that a new pass on the other region is not meant to be created
-        if((pos.time-currentRegion.lastPosTime)>timeBetweenPasses) {
-          currentRegion.passes.push(lastPass);
-        } else {
-          logger.debug("Pass on the known region too near the last pass on it. Skipping.");
-        }
+    //location found among known regions
+    } else if((pos.time-currentRegion.lastPosTime)<timeBetweenPasses && foundRegion!=currentRegion) {
+      logger.debug("New pass on already known region");
+      currentRegion = foundRegion;
+      lastPass.endTime = pos.time;
+      lastPass = {startTime: pos.time, trackers: [{trackerId: pos.trackerId, time: pos.time}]};
 
+      //check to see if time between passes is too low so that a new pass on the other region is not meant to be created
+      if((pos.time-currentRegion.lastPosTime)>timeBetweenPasses) {
+        currentRegion.passes.push(lastPass);
       } else {
-        logger.debug("Still on the same region + same pass");
-        var sameTracker = false;
-        for(var u=0; u<lastPass.trackers.length; u++) {
-          if(lastPass.trackers[u].trackerId==pos.trackerId) {
-            sameTracker = true;
-            break;
-          }
-        }
-        if(!sameTracker) {
-          lastPass.trackers.push({trackerId: pos.trackerId, time: pos.time});
+        logger.debug("Pass on the known region too near the last pass on it. Skipping.");
+      }
+
+    } else {
+      logger.debug("Still on the same region + same pass");
+      var sameTracker = false;
+      for(var u=0; u<lastPass.trackers.length; u++) {
+        if(lastPass.trackers[u].trackerId==pos.trackerId) {
+          sameTracker = true;
+          break;
         }
       }
-      currentRegion.samplesCount++;
-      currentRegion.lastPosTime = pos.time;
+      if(!sameTracker) {
+        lastPass.trackers.push({trackerId: pos.trackerId, time: pos.time});
+      }
+    }
+    currentRegion.samplesCount++;
+    currentRegion.lastPosTime = pos.time;
 
-      acceptedCounter++;
+    acceptedCounter++;
 
-    // } catch (err) {
-    //   logger.error(err);
-    //   rejectedCounter++;
-    // }
+
   }
+
+  var lastElementTime = null;
 
   //CREATE DB SAMPLES
   for(var a=0; a<regions.length; a++) {
@@ -195,25 +196,23 @@ function processPositions(positions, startTime, accountId, callback) {
     utils.deleteNullProperties(sample[0]);
     utils.deleteNullProperties(sample[1]);
 
-    logger.debug(">>>>>> ADDING REGION: " + JSON.stringify(sample));
+    logger.debug("ADDING REGION: " + JSON.stringify(sample));
     buffer[metricsName].push(sample);
     bufferCount++;
-    //FIXME if one query returns too much data, this may overflow memory. implement async stuff here for flushing
-    // if (bufferCount > 1000) {
-    //   flushToInfluxDB();
-    // }
+
+    lastElementTime = Math.max(region.lastPostTime, lastElementTime);
   }
 
-  influxClient.query("delete from \"accounts/" + accountId + "/presence\" where time > "+ startTime.getTime(), function(err, results) {
+  influxClient.query("delete from \"accounts/" + accountId + "/presence\" where time >= "+ startTime.getTime() + "s and time <= " + endTime.getTime() + "s", function(err, results) {
     if(err) {
-      callback("Could not delete last presence. err=" + err, acceptedCounter, rejectedCounter);
+      callback("Could not delete last presence. err=" + err, acceptedCounter, rejectedCounter, lastElementTime);
     } else {
       logger.debug("Deleted previous presence data");
       flushToInfluxDB(function(err) {
         if(err) {
-          callback("Could not flush presence. err=" + err, acceptedCounter, rejectedCounter);
+          callback("Could not flush presence. err=" + err, acceptedCounter, rejectedCounter, lastElementTime);
         } else {
-          callback(null, acceptedCounter, rejectedCounter);
+          callback(null, acceptedCounter, rejectedCounter, lastElementTime);
         }
       });
     }
