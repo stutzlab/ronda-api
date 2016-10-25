@@ -7,6 +7,7 @@ const influx = require("influx");
 const http = require("http");
 const async = require("async");
 const geolib = require("geolib");
+const geolib = require("d3-interpolate");
 const stats = require("stats-lite");
 logger.level = "debug";
 

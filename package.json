@@ -23,12 +23,14 @@
   },
   "dependencies": {
     "async": "^2.1.1",
+    "d3-interpolate": "^1.1.1",
     "geojson": "^0.4.0",
     "geolib": "^2.0.21",
     "hapi": "^13.4.1",
     "influx": "^4.2.3",
     "mqtt": "^1.10.0",
     "node-nmea": "^1.0.2",
+    "sgeo": "0.0.5",
     "stats-lite": "^2.0.3",
     "winston": "^2.2.0"
   }
