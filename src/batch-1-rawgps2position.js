@@ -105,7 +105,7 @@ function processRawGPS(rawGPSData, accountId, trackerId, startTime, callback) {
 
   // logger.debug("rawGPSData = " + JSON.stringify(parsed));
   for(var i=0; i<parsed[0].length; i++) {
-    var rawGps = parsed[0][i].value;
+    var rawGps = parsed[0][i].valueStr;
     logger.debug("========");
     logger.debug("========");
     // logger.info("Processing raw gps data: " + rawGps);
